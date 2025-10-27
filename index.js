@@ -5,6 +5,8 @@ const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 dotenv.config();
 
+const stripe = require("stripe")(process.env.PAYMENT_SECRET_KEY);
+
 const app = express();
 const port = process.env.PORT || 5000;
 
@@ -29,6 +31,8 @@ async function run() {
 
     const db = client.db("parcelDB");
     const parcelCollection = db.collection("parcels");
+    const paymentCollection = db.collection("payments");
+    const trackingCollection = db.collection("tracking")
 
     app.get("/parcels", async (req, res) => {
       try {
@@ -79,6 +83,116 @@ async function run() {
         console.error("Error inserting parcel: ", error);
         res.status(500).send({ message: "Failed to create parcel" });
       }
+    });
+
+    app.get("/parcels/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        const parcel = await parcelCollection.findOne({
+          _id: new ObjectId(id),
+        });
+
+        if (!parcel) {
+          return res.status(404).send({ message: "Parcel Not Found" });
+        }
+
+        res.send(parcel);
+      } catch (error) {
+        console.error("Error fatching parcel", error);
+        res.status(500).send({ message: "Failed to fetch" });
+      }
+    });
+
+    app.post("/create-payment-intent", async (req, res) => {
+      const amountInCents = req.body.amountInCents;
+      try {
+        const paymentIntent = await stripe.paymentIntents.create({
+          amount: amountInCents,
+          currency: "usd",
+          payment_method_types: ["card"],
+        });
+
+        res.json({ clientSecret: paymentIntent.client_secret });
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    app.post("/payments", async (req, res) => {
+      try {
+        const { parcelId, email, amount, paymentMethod, transactionId } =
+          req.body;
+
+        const updateResult = await parcelCollection.updateOne(
+          {
+            _id: new ObjectId(parcelId),
+          },
+          {
+            $set: {
+              payment_status: "paid",
+            },
+          }
+        );
+        if (updateResult.modifiedCount === 0) {
+          return res
+            .status(404)
+            .send({ message: "Parcel not found or already paid" });
+        }
+
+        const paymentDoc = {
+          parcelId,
+          email,
+          amount,
+          paymentMethod,
+          transactionId,
+          paidAt: new Date(),
+          paidISO: new Date().toISOString(),
+        };
+
+        const paymentResult = await paymentCollection.insertOne(paymentDoc);
+
+        res.status(201).send({
+          message: "Payment added",
+          insertedId: paymentResult.insertedId,
+        });
+      } catch (error) {
+        console.error("Payment error: ", error);
+      }
+    });
+
+    app.get("/payments", async (req, res) => {
+      try {
+        const userEmail = req.query.email;
+
+        const query = userEmail ? { email: userEmail } : {};
+        const options = { sort: { paidAt: -1 } };
+        const payments = await paymentCollection.find(query, options).toArray();
+        res.send(payments);
+      } catch (error) {
+        console.error("Error fatching payment history", error);
+      }
+    });
+
+    app.post("/tracking", async (req, res) => {
+      const {
+        tracking_id,
+        parcel_Id,
+        status,
+        message,
+        updated_By = "",
+      } = req.body;
+
+      const log = {
+        tracking_id,
+        parcel_Id: parcel_Id ? new ObjectId(parcel_Id) : undefined,
+        status,
+        message,
+        time: new Date(),
+        updated_By,
+      };
+
+      const result = await trackingCollection.insertOne(log);
+      res.send({ success: true, insertedId: result.insertedId });
     });
 
     await client.db("admin").command({ ping: 1 });
