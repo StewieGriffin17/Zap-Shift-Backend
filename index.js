@@ -32,7 +32,24 @@ async function run() {
     const db = client.db("parcelDB");
     const parcelCollection = db.collection("parcels");
     const paymentCollection = db.collection("payments");
-    const trackingCollection = db.collection("tracking")
+    const trackingCollection = db.collection("tracking");
+    const usersCollection = db.collection("users");
+
+    app.post("/users", async (req, res) => {
+      const email = req.body.email;
+      const userExists = await usersCollection.findOne({ email });
+
+      if (userExists) {
+        return res
+          .status(200)
+          .send({ message: "User already exists", inserted: false });
+      }
+
+      const user = req.body;
+      const result = await usersCollection.insertOne(user);
+
+      res.send(result);
+    });
 
     app.get("/parcels", async (req, res) => {
       try {
